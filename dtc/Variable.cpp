@@ -3,7 +3,57 @@
 
 Variable::Variable(const Type &t, std::vector<std::byte> data) {
     type = t;
-    this->data = std::move(data);
+    if (type.deref_count > 0) {
+        // we assume the data has already been converted to a pointer into virtual ram
+        this->data = std::move(data);
+        return;
+    }
+    if (type.is_basic()) {
+        this->data = std::move(data);
+        return;
+    }
+    // we need to iterate for structs, because all sub-data should be Variables, not just bytes
+    // this allows sub-structs and pointers in those to be created properly
+    if (auto s = std::get_if<StructType>(&type.type)) {
+        size_t offset = 0;
+        for (auto &t: s->types) {
+            size_t size = t_sizeof(t);
+            std::vector<std::byte> subdata(data.begin() + offset, data.begin() + offset + size);
+            offset += size;
+            Variable v(t, subdata);
+            this->data.insert(this->data.end(), v.data.begin(), v.data.end());
+        }
+    }
+}
+
+Variable::Variable(Context& ctx, const Type &t, std::vector<std::byte> data) {
+    type = t;
+    if (type.deref_count == 0) {
+        if (type.is_basic()) {
+            this->data = std::move(data);
+            return;
+        }
+        if (auto s = std::get_if<StructType>(&type.type)) {
+            size_t offset = 0;
+            for (auto &t: s->types) {
+                size_t size = t_sizeof(t);
+                std::vector<std::byte> subdata(data.begin() + offset, data.begin() + offset + size);
+                offset += size;
+                Variable v(ctx, t, subdata);
+                this->data.insert(this->data.end(), v.data.begin(), v.data.end());
+            }
+        }
+        return;
+    }
+    uint64_t ptr = 0;
+    for (size_t i = 0; i < sizeof(void*); i++) {
+        ptr |= std::to_integer<uint64_t>(data[i]) << (i * 8);
+    }
+    Type t2 = t;
+    t2.deref_count--;
+    Variable v = new_ptr(reinterpret_cast<void*>(ptr), ctx, t2);
+    this->data = v.data;
+
 }
 
 bool Variable::is_basic() const {
@@ -40,11 +90,14 @@ Variable::Variable(float a) {
 Variable::Variable(double a) {
     *this = new_f64(a);
 }
-Variable::Variable(void* a) {
-    *this = new_ptr(a);
+Variable::Variable(void* a, Context& ctx, Type t) {
+    *this = new_ptr(a, ctx, t);
 }
-Variable::Variable(Variable* a) {
-    *this = new_varptr(a);
+Variable::Variable(void* a, Context& ctx, uint64_t size) {
+    *this = new_ptr(a, ctx, size);
+}
+Variable::Variable(Variable* a, Context& ctx) {
+    *this = new_varptr(a, ctx);
 }
 Variable::Variable(std::vector<Variable> vars) {
     *this = new_struct(std::move(vars));
@@ -72,6 +125,20 @@ std::byte* Variable::getdata(size_t i) {
 }
 
 Variable Variable::getsub(size_t i) {
+    if (auto s = std::get_if<StructType>(&type.type)) {
+        if (i >= s->types.size()) {
+            throw std::runtime_error("Index out of bounds");
+        }
+        size_t offset = 0;
+        for (size_t j = 0; j < i; j++) {
+            offset += t_sizeof(s->types[j]);
+        }
+        return Variable{s->types[i], std::vector<std::byte>(data.begin() + offset, data.begin() + offset + t_sizeof(s->types[i]))};
+    }
+    return *this;
+}
+
+Variable Variable::getsub(Context& ctx, size_t i) {
     if (auto s = std::get_if<StructType>(&type.type)) {
         if (i >= s->types.size()) {
             throw std::runtime_error("Index out of bounds");
@@ -199,29 +266,6 @@ Variable new_f64(double val) {
     return v;
 }
 
-Variable new_ptr(void *p) {
-    Variable v;
-    v.type = t_voidptr;
-    v.data = std::vector<std::byte>(sizeof(void*));
-    uint64_t i = *reinterpret_cast<uint64_t*>(&p);
-    for (size_t j = 0; j < sizeof(void*); j++) {
-        v.data[j] = std::byte(i >> (j * 8));
-    }
-    return v;
-}
-
-Variable new_varptr(Variable *p) {
-    Variable v;
-    v.type = p->type;
-    v.type.deref_count++;
-    v.data = std::vector<std::byte>(sizeof(void*));
-    uint64_t i = *reinterpret_cast<uint64_t*>(&p);
-    for (size_t j = 0; j < sizeof(void*); j++) {
-        v.data[j] = std::byte(i >> (j * 8));
-    }
-    return v;
-}
-
 Variable new_bool(bool val) {
     Variable v;
     v.type = t_bool;
@@ -239,4 +283,59 @@ Variable new_struct(std::vector<Variable> vars) {
         types.push_back(v.type);
     }
     return Variable{new_struct_type(types), data};
+}
+
+Variable new_ptr(void *p, Context &ctx, const Type& t) {
+    size_t arrlen = 1;
+    if (t.is_basic() && std::get<BasicType>(t.type).bytes == 1 && !std::get<BasicType>(t.type).sign) {
+        // we assume it's a null-terminated string
+        char* c = reinterpret_cast<char*>(p);
+        arrlen = 1;
+        while (*c != '\0') {
+            arrlen++;
+            c++;
+        }
+    }
+    uint64_t size = t_sizeof(t)*arrlen;
+    size_t index = ctx.size();
+    ctx.resize(index + size);
+    std::memcpy(ctx.data() + index, p, size);
+    Variable v;
+    v.type = t;
+    v.data = std::vector<std::byte>(sizeof(void*));
+    uint64_t i = index;
+    for (size_t j = 0; j < sizeof(void*); j++) {
+        v.data[j] = std::byte(i >> (j * 8));
+    }
+    v.type.deref_count++;
+
+    return v;
+}
+Variable new_ptr(void *p, Context &ctx, uint64_t size) {
+    size_t index = ctx.size();
+    ctx.resize(index + size);
+    std::memcpy(ctx.data() + index, p, size);
+    Variable v;
+    v.type = t_voidptr;
+    v.data = std::vector<std::byte>(sizeof(void *));
+    uint64_t i = index;
+    for (size_t j = 0; j < sizeof(void *); j++) {
+        v.data[j] = std::byte(i >> (j * 8));
+    }
+    return v;
+}
+Variable new_varptr(Variable *p, Context &ctx) {
+    Variable v;
+    v.type = p->type;
+    v.type.deref_count++;
+    v.data = std::vector<std::byte>(sizeof(void *));
+    size_t index = ctx.size();
+    uint64_t size = p->data.size();
+    ctx.resize(index + size);
+    std::memcpy(ctx.data() + index, p->data.data(), size);
+    uint64_t i = index;
+    for (size_t j = 0; j < sizeof(void *); j++) {
+        v.data[j] = std::byte(i >> (j * 8));
+    }
+    return v;
 }

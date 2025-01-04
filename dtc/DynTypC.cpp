@@ -23,7 +23,7 @@ void printType(const Type &t) {
     }
 }
 
-void printVariable(Variable v, bool done) {
+void printVariable(Context& ctx, Variable v, bool done) {
     if (v.type.deref_count > 0) {
         if (v.data.size() != sizeof(void*)) {
             throw std::runtime_error("pointer size mismatch");
@@ -41,30 +41,30 @@ void printVariable(Variable v, bool done) {
         if (auto s = std::get_if<BasicType>(&v.type.type)) {
             if (s->floating) {
                 if (s->bytes == 4) {
-                    std::cout << std::dec << primitive<f32>(v);
+                    std::cout << std::dec << primitive<f32>(ctx, v);
                 } else if (s->bytes == 8) {
-                    std::cout << std::dec << primitive<f64>(v);
+                    std::cout << std::dec << primitive<f64>(ctx, v);
                 }
             } else {
                 if (s->sign) {
                     if (s->bytes == 1) {
-                        std::cout << (int)primitive<i8>(v);
+                        std::cout << (int)primitive<i8>(ctx, v);
                     } else if (s->bytes == 2) {
-                        std::cout << primitive<i16>(v);
+                        std::cout << primitive<i16>(ctx, v);
                     } else if (s->bytes == 4) {
-                        std::cout << primitive<i32>(v);
+                        std::cout << primitive<i32>(ctx, v);
                     } else if (s->bytes == 8) {
-                        std::cout << primitive<i64>(v);
+                        std::cout << primitive<i64>(ctx, v);
                     }
                 } else {
                     if (s->bytes == 1) {
-                        std::cout << (int)primitive<u8>(v);
+                        std::cout << (int)primitive<u8>(ctx, v);
                     } else if (s->bytes == 2) {
-                        std::cout << primitive<u16>(v);
+                        std::cout << primitive<u16>(ctx, v);
                     } else if (s->bytes == 4) {
-                        std::cout << primitive<u32>(v);
+                        std::cout << primitive<u32>(ctx, v);
                     } else if (s->bytes == 8) {
-                        std::cout << primitive<u64>(v);
+                        std::cout << primitive<u64>(ctx, v);
                     }
                 }
             }
@@ -81,7 +81,7 @@ void printVariable(Variable v, bool done) {
             std::cout << " {";
             for (size_t i = 0; i < s->types.size(); i++) {
                 Variable sub = v.getsub(i);
-                printVariable(sub, false);
+                printVariable(ctx, sub, false);
                 if (i != s->types.size() - 1) {
                     std::cout << ", ";
                 }
@@ -96,14 +96,32 @@ void printVariable(Variable v, bool done) {
     }
 }
 
-//template<typename T>
-//T primitive(Variable v, size_t index) {
-//    // if template type size is not the same as the variable type size
-//    // err
-//    if (sizeof(T) != t_sizeof(v.type)) {
-//        printType(v.type);
-//        std::cout << std::endl;
-//        throw std::runtime_error("primitive type size mismatch");
-//    }
-//    return *(T*)(v.getdata(index));
-//}
+Variable sanitizePointers(Context& ctx, Variable v) {
+    // if the type is a pointer, we must sanitize it by allocating memory for the data and copying it from virtual memory
+    // we need to recurse for structs
+    if (auto s = std::get_if<StructType>(&v.type.type)) {
+        Variable v2 = v;
+        v2.data.clear();
+        for (size_t i = 0; i < s->types.size(); i++) {
+            Variable sub = v.getsub(ctx, i);
+            Variable sanitized = sanitizePointers(ctx, sub);
+            v2.data.insert(v2.data.end(), sanitized.data.begin(), sanitized.data.end());
+        }
+        return v2;
+    } else if (v.type.deref_count > 0 && !v.type.sanitized) {
+        uint64_t ptr = 0;
+        for (size_t i = 0; i < sizeof(void*); i++) {
+            ptr |= std::to_integer<uint64_t>(v.data[i]) << (i * 8);
+        }
+        auto ptr2 = (size_t)(ptr+ctx.data());
+        v.data.clear();
+        v.data.resize(sizeof(void*));
+        for (size_t i = 0; i < sizeof(void*); i++) {
+            v.data[i] = std::byte((ptr2 >> (i * 8)) & 0xFF);
+        }
+        v.type.sanitized = true;
+        return v;
+    } else {
+        return v;
+    }
+}

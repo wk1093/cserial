@@ -39,6 +39,18 @@ bool Type::operator!=(const Type &other) const {
     return !(*this == other);
 }
 
+Type Type::ptr() const {
+    Type t = *this;
+    t.deref_count++;
+    return t;
+}
+
+Type Type::deref() const {
+    Type t = *this;
+    t.deref_count--;
+    return t;
+}
+
 Type new_struct_type(std::vector<Type> types) {
     return Type(StructType(std::move(types)));
 }

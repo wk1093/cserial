@@ -8,6 +8,9 @@
 #include <variant>
 #include <stdexcept>
 #include <iostream>
+#include <algorithm>
+#include <cstring>
+
 
 struct BasicType {
     bool sign=true; // true if signed, false if unsigned
@@ -31,6 +34,7 @@ struct StructType {
 struct Type {
     uint64_t deref_count = 0;
     std::variant<BasicType, StructType> type{};
+    bool sanitized = false;
 
     Type() = default;
     explicit Type(BasicType type, uint64_t deref=0);
@@ -42,6 +46,17 @@ struct Type {
     bool operator==(const Type& other) const;
 
     bool operator!=(const Type& other) const;
+
+    inline bool is_basic() const {
+        return std::holds_alternative<BasicType>(type);
+    }
+
+    inline bool is_struct() const {
+        return std::holds_alternative<StructType>(type);
+    }
+
+    Type ptr() const;
+    Type deref() const;
 };
 
 const auto t_i8 = Type(BasicType(true, 1));

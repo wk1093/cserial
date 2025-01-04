@@ -13,4 +13,5 @@ add_executable(cdata main.cpp
         dtc/DynTypC.h
         dtc/Serial.h
         dtc/Serial.cpp
-        dtc/DynTypC.cpp)
+        dtc/DynTypC.cpp
+)

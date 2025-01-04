@@ -130,25 +130,59 @@ Type deserialize_type(ByteStream& bytes);
 Variable deserialize_variable(ByteStream& bytes);
 
 template<typename T>
-T deserialize(std::vector<std::byte> bytes) {
+T deserialize(Context& ctx, std::vector<std::byte> bytes) {
     ByteStream stream(std::move(bytes));
-    return primitive<T>(deserialize_variable(stream));
+    return primitive<T>(ctx, deserialize_variable(stream));
 }
 
 template<typename T>
-std::vector<std::byte> serialize(T val, const Type &t) {
-    return serialize_variable(construct_variable(val, t));
+std::vector<std::byte> serialize(Context& ctx, T val, const Type &t) {
+    return serialize_variable(construct_variable(ctx, val, t));
 }
 
 template<typename T>
-Variable construct_variable(T val, const Type &t) {
-    Variable v = Variable(t, std::vector<std::byte>(sizeof(T)));
-    std::memcpy(v.data.data(), &val, sizeof(T));
+Variable construct_variable(Context& ctx, T val, const Type &t) {
+    std::vector<std::byte> bytes;
+    uint64_t size = sizeof(T);
+    // bytes of the value
+    bytes.resize(size);
+    std::memcpy(bytes.data(), &val, size);
+    Variable v = Variable(ctx, t, bytes);
     return v;
 }
 
 typedef std::vector<std::byte> Bytes;
 
+template<typename T>
+Bytes final_serialize(T val, const Type &t) {
+    Context ctx;
+    Bytes b = serialize(ctx, val, t);
+    // format: serialized size, serialized data, context
+    Bytes final;
+    final = serialize_u64(b.size());
+    final.insert(final.end(), b.begin(), b.end());
+    final.insert(final.end(), ctx.begin(), ctx.end());
+    return final;
+}
+
+template<typename T>
+struct Deserialized {
+    T val;
+    Context* ctx;
+};
+
+template<typename T>
+Deserialized<T> final_deserialize(Bytes bytes) {
+    ByteStream stream(bytes);
+    uint64_t size = deserialize_u64(stream);
+    Bytes b = Bytes(bytes.begin() + 8, bytes.begin() + 8 + size);
+    Bytes ctx_bytes(bytes.begin() + 8 + size, bytes.end());
+    // when we make this context, it must outlive this function, because all the data returned will point to the context
+    Context* ctx = new Context();
+    ctx->resize(ctx_bytes.size());
+    std::copy(ctx_bytes.begin(), ctx_bytes.end(), ctx->begin());
+    return Deserialized<T>{deserialize<T>(*ctx, b), ctx};
+}
 
 
 #endif  // DTC_SERIAL_H_

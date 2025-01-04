@@ -4,6 +4,8 @@
 
 #include "Type.h"
 
+typedef std::vector<std::byte> Context; // virtual RAM for pointers
+
 struct Variable {
     Type type{};
     std::vector<std::byte> data{};
@@ -19,11 +21,13 @@ struct Variable {
     Variable(uint64_t a);
     Variable(float a);
     Variable(double a);
-    Variable(Variable* a);
-    Variable(void* a);
+    Variable(Variable* a, Context& ctx);
+    Variable(void* a, Context& ctx, Type t);
+    Variable(void* a, Context& ctx, uint64_t size);
     Variable(std::vector<Variable> vars);
     Variable(std::initializer_list<Variable> vars);
 
+    Variable(Context& ctx, const Type& t, std::vector<std::byte> data);
     Variable(const Type& t, std::vector<std::byte> data);
 
     ~Variable() = default;
@@ -32,6 +36,7 @@ struct Variable {
 
     std::byte* getdata(size_t i=0);
     Variable getsub(size_t i=0);
+    Variable getsub(Context& ctx, size_t i=0);
 };
 
 Variable new_i8(int8_t val);
@@ -46,9 +51,10 @@ Variable new_u64(uint64_t val);
 Variable new_f32(float val);
 Variable new_f64(double val);
 
-Variable new_ptr(void* p);
+Variable new_ptr(void* p, Context& ctx, const Type& t);
+Variable new_ptr(void* p, Context& ctx, uint64_t size);
 
-Variable new_varptr(Variable* p);
+Variable new_varptr(Variable* p, Context& ctx);
 
 Variable new_bool(bool val);
 
